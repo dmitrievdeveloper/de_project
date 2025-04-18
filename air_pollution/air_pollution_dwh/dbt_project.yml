@@ -1,0 +1,31 @@
+name: 'air_pollution_dwh'
+version: '1.0.0'
+config-version: 2
+
+profile: 'air_pollution_dwh_profile'
+
+model-paths: ["models"]         
+analysis-paths: ["analyses"]    
+test-paths: ["tests"]           
+seed-paths: ["seeds"]           
+macro-paths: ["macros"]        
+snapshot-paths: ["snapshots"]   
+
+target-path: "target"
+log-path: "logs"
+packages-install-path: "dbt_packages"
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  air_pollution_dwh:
+    +materialized: table 
+    staging:
+      +materialized: view 
+      +schema: staging    
+    marts:
+      +materialized: table 
+      +schema: marts      
+      

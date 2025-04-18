@@ -1,0 +1,271 @@
+x-airflow-common: &airflow-common
+  # image: apache/airflow:2.8.1-python3.9 # Заменяем на build
+  build: ./airflow # Указываем путь к Dockerfile для Airflow
+  env_file:
+    - .env
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW_FERNET_KEY}' 
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
+    AIRFLOW_CONN_MINIO_S3_DEFAULT: '{"conn_type": "aws", "login": "${MINIO_ROOT_USER}", "password": "${MINIO_ROOT_PASSWORD}", "host": "http://minio:9000", "schema": "http", "extra": "{\\"aws_access_key_id\\": \\"${MINIO_ROOT_USER}\\", \\"aws_secret_access_key\\": \\"${MINIO_ROOT_PASSWORD}\\", \\"host\\": \\"http://minio:9000\\"}"}'
+    AIRFLOW_CONN_CLICKHOUSE_DEFAULT: '{"conn_type": "clickhouse", "host": "clickhouse-server", "schema": "default", "login": "${CLICKHOUSE_USER}", "password": "${CLICKHOUSE_PASSWORD}", "port": 9000}'
+    CLICKHOUSE_HOST: clickhouse-server
+    CLICKHOUSE_PORT: 9000
+    CLICKHOUSE_USER: '${CLICKHOUSE_USER}'
+    CLICKHOUSE_PASSWORD: '${CLICKHOUSE_PASSWORD}'
+    CLICKHOUSE_DATABASE: default
+    OPENWEATHERMAP_API_KEY: '${OPENWEATHERMAP_API_KEY}'
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - /var/run/docker.sock:/var/run/docker.sock 
+    - ./docker-compose.yaml:/opt/airflow/docker-compose.yaml 
+    - ./air_pollution_dwh:/dbt/project/air_pollution_dwh 
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on 
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $$(hostname)"]
+    interval: 60s
+    timeout: 60s
+    retries: 3
+    start_period: 120s
+  command: ["bash", "-c", "airflow webserver"]
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.0
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9121:9001" 
+      - "9123:9000" 
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
+  clickhouse-server:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-server
+    env_file:
+      - .env
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: default 
+    ports:
+      - "9124:9000"
+      - "8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    ulimits: 
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: airflow webserver 
+    ports:
+      - "8080:8080"
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      clickhouse-server:
+        condition: service_healthy
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: airflow scheduler 
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      clickhouse-server:
+        condition: service_healthy
+    restart: always
+
+  airflow-worker:
+    <<: *airflow-common
+    container_name: airflow-worker
+    command: airflow celery worker 
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-scheduler:
+        condition: service_healthy
+    restart: always
+
+  airflow-init:
+    # image: apache/airflow:2.8.1-python3.9 
+    build: ./airflow 
+    container_name: airflow-init
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW_FERNET_KEY}'
+      AIRFLOW_CONN_MINIO_S3_DEFAULT: '{"conn_type": "aws", "login": "${MINIO_ROOT_USER}", "password": "${MINIO_ROOT_PASSWORD}", "host": "http://minio:9000", "schema": "http", "extra": "{\\"aws_access_key_id\\": \\"${MINIO_ROOT_USER}\\", \\"aws_secret_access_key\\": \\"${MINIO_ROOT_PASSWORD}\\", \\"host\\": \\"http://minio:9000\\"}"}'
+      AIRFLOW_CONN_CLICKHOUSE_DEFAULT: '{"conn_type": "clickhouse", "host": "clickhouse-server", "schema": "default", "login": "${CLICKHOUSE_USER}", "password": "${CLICKHOUSE_PASSWORD}", "port": 9000}'
+    volumes:
+      - ./airflow/logs:/opt/airflow/logs
+      - /var/run/docker.sock:/var/run/docker.sock 
+      - ./docker-compose.yaml:/opt/airflow/docker-compose.yaml 
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db init
+        airflow users create \
+          --username admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password admin || true
+        python /opt/airflow/setup_connections.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # Не перезапускать после выполнения
+    restart: on-failure
+
+  dbt:
+    build:
+      context: ./
+      dockerfile: ./dbt/Dockerfile
+    container_name: dbt
+    env_file:
+      - .env
+    environment:
+      CLICKHOUSE_HOST: clickhouse-server
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: '${CLICKHOUSE_USER}'
+      CLICKHOUSE_PASSWORD: '${CLICKHOUSE_PASSWORD}'
+      CLICKHOUSE_DATABASE: default
+    volumes:
+      - ./air_pollution_dwh:/dbt/project/air_pollution_dwh # Монтируем только нужную директорию
+    command: tail -f /dev/null
+    depends_on:
+      clickhouse-server:
+        condition: service_healthy
+    networks:
+      - default
+
+  metabase-db:
+    image: postgres:15
+    container_name: metabase-db
+    environment:
+      POSTGRES_USER: ${METABASE_DB_USER}
+      POSTGRES_PASSWORD: ${METABASE_DB_PASSWORD}
+      POSTGRES_DB: metabase
+    volumes:
+      - metabase-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${METABASE_DB_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: ${METABASE_DB_USER}
+      MB_DB_PASS: ${METABASE_DB_PASSWORD}
+      MB_DB_HOST: metabase-db
+      MB_EMAIL: ${METABASE_USER}
+      MB_PASSWORD: ${METABASE_PASSWORD}
+    depends_on:
+      metabase-db:
+        condition: service_healthy
+      clickhouse-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-db:
+  redis-data:
+  minio-data:
+  clickhouse-data:
+  clickhouse-logs:
+  metabase-db-data:
+
+networks:
+  default:
+    driver: bridge

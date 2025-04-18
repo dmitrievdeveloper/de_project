@@ -1,0 +1,35 @@
+version: 2
+
+sources:
+  - name: default # Имя схемы в ClickHouse, где находится raw-таблица
+    description: "Raw data loaded from S3/MinIO"
+    tables:
+      - name: raw_air_quality # Имя вашей raw-таблицы
+        description: "Raw air quality measurements from OpenWeatherMap API history endpoint, loaded daily."
+        columns:
+          - name: city_name
+            description: "Name of the city"
+          - name: dt
+            description: "Timestamp string (ISO 8601 format) of the measurement from the source CSV"
+          - name: aqi
+            description: "Air Quality Index"
+          - name: co
+            description: "Concentration of CO (Carbon monoxide), μg/m3"
+          - name: no
+            description: "Concentration of NO (Nitrogen monoxide), μg/m3"
+          - name: no2
+            description: "Concentration of NO2 (Nitrogen dioxide), μg/m3"
+          - name: o3
+            description: "Concentration of O3 (Ozone), μg/m3"
+          - name: so2
+            description: "Concentration of SO2 (Sulphur dioxide), μg/m3"
+          - name: pm2_5
+            description: "Concentration of PM2.5 (Fine particles matter), μg/m3"
+          - name: pm10
+            description: "Concentration of PM10 (Coarse particulate matter), μg/m3"
+          - name: nh3
+            description: "Concentration of NH3 (Ammonia), μg/m3"
+          - name: load_ts
+            description: "Timestamp when the record was loaded into the raw table"
+            tests:
+              - not_null # Время загрузки не должно быть пустым

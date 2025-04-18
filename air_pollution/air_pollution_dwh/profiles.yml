@@ -1,0 +1,12 @@
+air_pollution_dwh_profile:
+  target: dev 
+  outputs:
+    dev:
+      type: clickhouse
+      driver: native 
+      schema: default 
+      host: "{{ env_var('CLICKHOUSE_HOST', 'clickhouse-server') }}" 
+      port: "{{ env_var('CLICKHOUSE_PORT', 9000) | int }}" 
+      user: "{{ env_var('CLICKHOUSE_USER') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD') }}" 
+      
